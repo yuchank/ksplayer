@@ -8,5 +8,5 @@ link_directories(${CMAKE_SOURCE_DIR}/lib)
 
 set(CMAKE_CXX_STANDARD 17)
 
-add_executable(ksplayer main.cpp)
-target_link_libraries(ksplayer avdevice avformat)
+add_executable(ksplayer src/main.cpp)
+target_link_libraries(ksplayer avdevice avformat avutil)
