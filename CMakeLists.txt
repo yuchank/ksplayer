@@ -13,4 +13,4 @@ set(CMAKE_CXX_STANDARD 17)
 set(SOURCE_FILES src/main.cpp)
 
 add_executable(ksplayer ${SOURCE_FILES})
-target_link_libraries(ksplayer avdevice avformat avutil avcodec swscale ${SDL2_LIBRARY})
+target_link_libraries(ksplayer avdevice avformat avutil avcodec swscale swresample ${SDL2_LIBRARY})
