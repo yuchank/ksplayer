@@ -12,6 +12,10 @@ typedef struct VideoState {
 
 } VideoState;
 
+/* options specified by the user */
+static AVInputFormat *file_iformat;
+static const char *input_filename;
+
 static int decoder_decode_frame(Decoder *d, AVFrame *frame, AVSubtitle *sub)    // 585
 {
   while (true) {
@@ -219,7 +223,7 @@ int main(int argc, char *argv[])  // 3645
   VideoState *is;
 
   // 1. open stream
-  is = stream_open(input_file_name, file_iformat);
+  is = stream_open(input_filename, file_iformat);
 
   // 8. event loop
   event_loop(is);
