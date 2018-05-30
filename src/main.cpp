@@ -8,406 +8,221 @@ extern "C" {
 
 #include <SDL.h>
 
-#define FF_QUIT_EVENT (SDL_USEREVENT + 2)
+typedef struct VideoState {
 
-#define MAX_QUEUE_SIZE (15 * 1024 * 1024)
-
-#define SDL_AUDIO_BUFFER_SIZE 1024
-
-#define AVCODEC_MAX_AUDIO_FRAME_SIZE 192000
-
-typedef struct _PacketQueue {
-  AVPacketList *first, *last;
-  int nb_packets, size;
-  SDL_mutex *mutex;
-  SDL_cond *cond;
-} PacketQueue;
-
-typedef struct _VideoPicture {
-  SDL_Texture *texture;
-  int width, height;
-  int allocated;
-  double pts;
-} VideoPicture;
-
-typedef struct _VideoState {
-  // common
-  AVFormatContext *p_format_context;
-  char *p_filename;
-  int quit;
-
-  // video
-  AVCodecContext *p_video_codec_context;
-  AVStream *p_video_stream;
-  PacketQueue videoq;
-  AVPacket video_packet;
-  struct SwsContext *p_sws_context;
-  int video_index;
-  AVFrame *p_frame_RGB;
-  uint8_t *p_frame_buffer;
-  SDL_Thread *p_parser_tid;
-  SDL_Thread *p_video_tid;
-  SDL_Window *p_window;
-  SDL_Renderer *p_renderer;
-
-  // audio
-  AVCodecContext *p_audio_codec_context;
-  PacketQueue audioq;
-  AVPacket audio_packet;
-  struct SwrContext *p_swr_context;
-  AVFrame *p_audio_frame;
-  int audio_index;
-  unsigned int audio_buf_size, audio_buf_index;
-  uint8_t audio_buffer[(AVCODEC_MAX_AUDIO_FRAME_SIZE * 3) / 2];
-  uint8_t audio_converted_data[(AVCODEC_MAX_AUDIO_FRAME_SIZE * 3) / 2];
-  int has_audio_frames;
 } VideoState;
 
-VideoState *p_global_video_state;
-
-void packet_queue_init(PacketQueue *q)
+static int decoder_decode_frame(Decoder *d, AVFrame *frame, AVSubtitle *sub)    // 585
 {
-  memset(q, 0, sizeof(PacketQueue));
-  q->mutex = SDL_CreateMutex();
-  q->cond = SDL_CreateCond();
-}
-
-int packet_queue_put(PacketQueue *pq, const AVPacket *p_src_pkt)
-{
-  AVPacketList *p_packet_list;
-  AVPacket pkt;
-  int rv;
-
-  if (!pq) return -1;
-  rv = av_packet_ref(&pkt, p_src_pkt);
-  if (rv) return rv;
-  p_packet_list = (AVPacketList *)av_malloc(sizeof(AVPacketList));
-  if (!p_packet_list) return -1;
-  p_packet_list->pkt = pkt;
-  p_packet_list->next = NULL;
-
-  SDL_LockMutex(pq->mutex);
-
-  if (!pq->last)
-    pq->first = p_packet_list;
-  else
-    pq->last->next = p_packet_list;
-  pq->last = p_packet_list;
-  pq->nb_packets++;
-  pq->size += p_packet_list->pkt.size;
-  SDL_CondSignal(pq->cond);
-
-  SDL_UnlockMutex(pq->mutex);
-  return 0;
-}
-
-int packet_queue_get(PacketQueue *pq, AVPacket *pkt, int block)
-{
-  AVPacketList *p_packet_list;
-  int rv;
-
-  if (!pq || !pkt) return -1;
-
-  SDL_LockMutex(pq->mutex);
-
   while (true) {
-    if (p_global_video_state->quit) {
-      rv = -1;
-      break;
-    }
-    p_packet_list = pq->first;
-    if (p_packet_list) {
-      pq->first = p_packet_list->next;
-      if (!pq->first)
-        pq->last = NULL;
-      pq->nb_packets--;
-      pq->size -= p_packet_list->pkt.size;
-      *pkt = p_packet_list->pkt;
-      av_free(p_packet_list);
-      rv = 1;
-      break;
-    }
-    else if (!block) {
-      rv = 0;
-      break;
-    }
-    else  {
-      SDL_CondWait(pq->cond, pq->mutex);
-    }
-  }
-  SDL_CondSignal(pq->cond);
-
-  SDL_UnlockMutex(pq->mutex);
-
-  return rv;
-}
-
-int decode_audio_frame(VideoState *is)
-{
-  int data_size = 0, out_size = 0, rv, has_packet = 0;
-  uint8_t *p_converted = &is->audio_converted_data[0];
-
-  while (true) {
-    while (is->has_audio_frames) {
-      rv = avcodec_receive_frame(is->p_audio_codec_context, is->p_audio_frame);
-      if (rv) {
-        is->has_audio_frames = 0;
-        break;
-      }
-
-      av_samples_get_buffer_size(NULL, is->p_audio_codec_context->channels, is->p_audio_frame->nb_samples, is->p_audio_codec_context->sample_fmt, 1);
-      out_size = av_samples_get_buffer_size(NULL, is->p_audio_codec_context->channels, is->p_audio_frame->nb_samples, AV_SAMPLE_FMT_FLT, 1);
-      swr_convert(is->p_swr_context, &p_converted, is->p_audio_frame->nb_samples, (const uint8_t**)&is->p_audio_frame->data[0], is->p_audio_frame->nb_samples);
-      memcpy(is->audio_buffer, p_converted, out_size);
-      data_size = out_size;
-
-      /* We have data, return it and come back for more later */
-      return data_size;
+    AVPacket pkt;
+    if (d->queue->serial == d->pkt_serial) {
+      do {
+        switch (d->avctx->codec_type) {
+          case AVMEDIA_TYPE_VIDEO:
+            // 6-3. decode send-receive pair
+            ret = avcodec_receive_frame(d->avctx, frame);
+            break;
+        }
+      } while (ret != AVERROR(EAGAIN));
     }
 
-    if (has_packet) {
+    if (pkt.data == flush_pkt.data) {
 
     }
+    else {
+      if (d->avctx-codec_type == AVMEDIA_TYPE_SUBTITLE) {
 
-    if (is->quit) return -1;
-
-    if (packet_queue_get(&is->audioq, &is->audio_packet, 1) < 0)
-      return -1;
-
-    has_packet = 1;
-
-    rv = avcodec_send_packet(is->p_audio_codec_context, &is->audio_packet);
-    if (rv) return rv;
-
-    is->has_audio_frames = 1;
-  }
-
-  return -1;
-}
-
-void audio_callback(void *data, uint8_t *stream, int len)
-{
-  auto *is = static_cast<VideoState *>(data);
-  int audio_size;
-
-  while (len > 0) {   // 8192
-    if (is->audio_buf_index >= is->audio_buf_size) {
-      // already sent all data; get more
-      audio_size = decode_audio_frame(is);
-      if (audio_size < 0) {
-        // error
-        is->audio_buf_size = SDL_AUDIO_BUFFER_SIZE;   // 1024
-        memset(is->audio_buffer, 0, sizeof(is->audio_buffer));
       }
       else {
-        is->audio_buf_size = audio_size;
+        // 6-2. decode send-receive pair
+        if (avcodec_send_packet(d->avctx, &pkt) == AVERROR(EAGAIN)) {
+
+        }
       }
-      is->audio_buf_index = 0;
     }
   }
 }
 
-int video_thread(void *data)
+static void frame_queue_push(FrameQueue *f)   // 772
 {
-  auto *is = static_cast<VideoState *>(data);
 
-  return 0;
 }
 
-int stream_component_open(VideoState *is, int stream_index)
+static void video_image_display(VideoState *is)   // 957
 {
-  AVCodecParameters *p_codec_par = is->p_format_context->streams[stream_index]->codecpar;
-  AVCodec *p_codec;
-  AVCodecContext *p_codec_context;
-  SDL_AudioSpec wanted_spec = { 0 }, audio_spec = { 0 };
-  int rv, size;
 
-  if (stream_index < 0 || stream_index >= is->p_format_context->nb_streams)
+}
+
+static void video_audio_display(VideoState *is)    // 1043
+{
+
+}
+
+/* display the current picture, if any */
+static void video_display(VideoState *is)   // 1342
+{
+  if (is->audio_st && is->show_mode != SHOW_MODE_VIDEO)
+    // 12-1. video for audio output
+    video_audio_display(is);
+  else if (is->video_st)
+    // 12-2. video-image output
+    video_image_display(is);
+}
+
+/* called to display each frame */
+static void video_refresh(void *opaque, double *remaining_time)   // 1556
+{
+  if (is->video_st) {
+    /* 11. display picture */
+    if (!display_disable && is->force_refresh && is->show_mode == SHOW_MODE_VIDEO && is->pictq.rindex_shown)
+      video_display(is);
+  }
+}
+
+static int queue_picture(VideoState *is, AVFrame *src_frame, double pts, double duration, int64_t pos, int serial)  // 1714
+{
+  // 7-1. move decoded frame to frame queue
+  av_frame_move_ref(vp->frame, src_frame);
+}
+
+static int get_video_frame(VideoState *is, AVFrame *frame)    // 1745
+{
+  // 6-1. decode a frame
+  if ((got_picture = decoder_decode_frame(&is->viddec, frame, NULL)) < 0)
     return -1;
-
-  p_codec = avcodec_find_decoder(p_codec_par->codec_id);
-  if (!p_codec) return -1;
-
-  p_codec_context = avcodec_alloc_context3(p_codec);
-  if (!p_codec_context) return -1;
-
-  rv = avcodec_parameters_to_context(p_codec_context, p_codec_par);
-  if (rv < 0) {
-    avcodec_free_context(&p_codec_context);
-    return rv;
-  }
-
-  rv = avcodec_open2(p_codec_context, p_codec, nullptr);
-  if (rv < 0) {
-    avcodec_free_context(&p_codec_context);
-    return rv;
-  }
-
-  if (p_codec_par->codec_type == AVMEDIA_TYPE_AUDIO) {
-    is->p_audio_codec_context = p_codec_context;
-
-    wanted_spec.channels = static_cast<Uint8 >(p_codec_context->channels);
-    wanted_spec.freq = p_codec_context->sample_rate;
-    wanted_spec.format = AUDIO_F32;
-    wanted_spec.silence = 0;
-    wanted_spec.samples = SDL_AUDIO_BUFFER_SIZE;
-    wanted_spec.userdata = is;
-    wanted_spec.callback = audio_callback;
-
-    if (SDL_OpenAudio(&wanted_spec, &audio_spec) < 0) {
-      fprintf(stderr, "SDL_OpenAudio: %s\n", SDL_GetError());
-      return -1;
-    }
-
-    SDL_PauseAudio(0);
-  }
-  else if (p_codec_par->codec_type == AVMEDIA_TYPE_VIDEO) {
-    is->p_video_codec_context = p_codec_context;
-    is->p_video_stream = is->p_format_context->streams[stream_index];
-
-    is->p_sws_context = sws_getContext(p_codec_context->width, p_codec_context->height, p_codec_context->pix_fmt, p_codec_context->width, p_codec_context->height, AV_PIX_FMT_RGB24, SWS_BILINEAR, nullptr, nullptr, nullptr);
-    if (!is->p_sws_context) return -1;
-
-    is->p_frame_RGB = av_frame_alloc();
-    if (!is->p_frame_RGB) return -1;
-
-    size = av_image_get_buffer_size(AV_PIX_FMT_RGB24, p_codec_par->width, p_codec_par->height, 8);
-    if (size < 1) return -1;
-
-    is->p_frame_buffer = (uint8_t*)av_malloc(size);
-    if (!is->p_frame_buffer) return AVERROR(ENOMEM);
-
-    rv = av_image_fill_arrays(&is->p_frame_RGB->data[0], &is->p_frame_RGB->linesize[0], is->p_frame_buffer, AV_PIX_FMT_RGB24, p_codec_par->width, p_codec_par->height, 1);
-    if (rv < 0) return rv;
-
-    packet_queue_init(&is->videoq);
-    is->p_video_tid = SDL_CreateThread(video_thread, "video", is);
-    if (!is->p_video_tid) return -1;
-  }
-
-  return 0;
 }
 
-int parse_thread(void *data)
+static int audio_thread(void *arg)    // 2003
 {
-  auto *is = static_cast<VideoState *>(data);
-  AVPacket pkt;
-  int rv;
+  do {
+    // 14-1. decode a frame
+    if ((got_frame = decoder_decode_frame(&is->auddec, frame, NULL)) < 0)
+      goto the_end;
+
+    if (got_frame) {
+      // 14-2. queue frame
+      frame_queue_push(&is->sampq);
+    }
+
+  } while (ret >= 0 || ret == AVERROR(EAGAIN) || ret == AVERROR_EOF);
+}
+
+static int decoder_start(Decoder *d, int (*fn)(void *), void *arg)  // 2090
+{
+  // 5. create a decoder thread
+  d->decoder_tid = SDL_CreateThread(fn, "decoder", arg);
+}
+
+static int video_thread(void *arg)  // 2101
+{
+  while (true) {
+    // 6. get decoded frame
+    ret = get_video_frame(is, frame);
+    // 7. queue frame
+    ret = queue_picture(is, frame, pts, duration, frame->pkt_pos, is->viddec.pkt_serial);
+  }
+}
+
+/**
+ *  return re-sampled audio data
+ */
+static int audio_decode_frame(VideoState *is)   // 2313
+{
+
+}
+
+/* prepare a new audio buffer */
+static void sdl_audio_callback(void *opaque, Uint8 *stream, int len)    // 2426
+{
+  while (len > 0) {
+    if (is->audio_buf_index >= is->audio_buf_size) {
+      // 13-1-1. re-sampling audio
+      audio_size = audio_decode_frame(is);
+    }
+  }
+}
+
+static int audio_open(void *opaque, int64_t wanted_channel_layout, int wanted_nb_channels, int wanted_sample_rate, struct AudioParams *audio_hw_params) // 2469
+{
+  // 13-1. SDL audio callback
+  wanted_spec.callback = sdl_audio_callback;
+
+  // 13-2. open audio device
+  while (!(audio_dev = SDL_OpenAudioDevice(NULL, 0, &wanted_spec, &spec, SDL_AUDIO_ALLOW_FREQUENCY_CHANGE | SDL_AUDIO_ALLOW_CHANNELS_CHANGE))) {
+
+  }
+}
+
+/* open a given stream. return 0 if OK */
+static int stream_component_open(VideoState *is, int stream_index)  // 2543
+{
+  int ret = 0;
+
+  switch (avctx->codec_type) {
+    case AVMEDIA_TYPE_AUDIO:
+      /* prepare audio output */
+      // 13. audio open
+      if ((ret = audio_open(is, channel_layout, nb_channels, sample_rate, &is->audio_tgt)) < 0)
+        goto fail;
+      // 14. start decoder (thread fn: audio_thread)
+      if ((ret = decoder_start(&is->auddec, audio_thread, is)) < 0)
+        goto out;
+      SDL_PauseAudioDevice(audio_dev, 0);
+      break;
+    case AVMEDIA_TYPE_VIDEO:
+      // 4. start decoder (thread fn: video_thread)
+      if ((ret = decoder_start(&is->viddec, video_thread, is)) < 0)
+        goto out;
+      break;
+    default:
+      break;
+  }
+}
+
+/* this thread gets the stream from the disk or the network */
+static int read_thread(void *arg)     // 2725
+{
+  // 3. open stream
+  stream_component_open(is, st_index[AVMEDIA_TYPE_VIDEO]);
+
+}
+
+static VideoState *stream_open(const char *filename, AVInputFormat *iformat)  // 3047
+{
+  // 2. create a thread
+  is->read_tid = SDL_CreateThread(read_thread, "read_thread", is);
+}
+
+static void refresh_loop_wait_event(VideoState *is, SDL_Event *event)   // 3199
+{
+  while (!SDL_PeepEvents(event, 1, SDL_GETEVENT, SDL_FIRSTEVENT, SDL_LASTEVENT)) {
+    if (is->show_mode != SHOW_MODE_NONE && (!is->paused || is->force_refresh))
+      // 10. video refresh
+      video_refresh(is, &remaining_time);
+  }
+}
+
+/* handle an event sent by the GUI */
+static void event_loop(VideoState *cur_stream)  // 3244
+{
+  SDL_Event event;
 
   while (true) {
-    if (is->quit) break;
-
-    if (is->videoq.size >= MAX_QUEUE_SIZE || is->audioq.size >= MAX_QUEUE_SIZE) {
-      SDL_Delay(10);
-      continue;
-    }
-
-    rv = av_read_frame(is->p_format_context, &pkt);
-    if (rv < 0) break;
-
-    if (pkt.stream_index == is->audio_index) {
-      packet_queue_put(&is->audioq, &pkt);
-    }
-    else if (pkt.stream_index == is->video_index) {
-      packet_queue_put(&is->videoq, &pkt);
-    }
-
-    av_packet_unref(&pkt);
+    // 9. video refresh
+    refresh_loop_wait_event(cur_stream, &event);
   }
-
-  while (!is->quit) {
-    SDL_Delay(100);
-  }
-
-  SDL_Event event;
-  event.type = FF_QUIT_EVENT;
-  event.user.data1 = is;
-  SDL_PushEvent(&event);
-
-  return 0;
 }
 
-int main(int argc, char *argv[])
+int main(int argc, char *argv[])  // 3645
 {
-  int rv = 0;
-  SDL_Event evt;
-  VideoState *is = nullptr;
+  VideoState *is;
 
-  if (argc < 2) {
-    fprintf(stderr, "no filename\n");
-    return rv;
-  }
+  // 1. open stream
+  is = stream_open(input_file_name, file_iformat);
 
-  if (SDL_Init(SDL_INIT_AUDIO | SDL_INIT_VIDEO | SDL_INIT_TIMER)) {
-    fprintf(stderr, "Unable to init SDL: %s \n", SDL_GetError());
-    goto cleanup;
-  }
+  // 8. event loop
+  event_loop(is);
 
-  is = static_cast<VideoState *>(av_mallocz(sizeof(VideoState)));
-  if (!is) goto cleanup;
-
-  is->p_filename = static_cast<char *>(av_mallocz(strlen(argv[1]) + 1));
-  av_strlcpy(is->p_filename, argv[1], strlen(argv[1]) + 1);
-
-  is->p_format_context = avformat_alloc_context();;
-  if (!is->p_format_context) goto cleanup;
-
-  rv = avformat_open_input(&is->p_format_context, is->p_filename, nullptr, nullptr);
-  if (rv < 0) goto cleanup;
-
-  rv = avformat_find_stream_info(is->p_format_context, nullptr);
-  if (rv < 0) goto cleanup;
-
-  av_dump_format(is->p_format_context, 0, is->p_filename, 0);
-
-  is->video_index = av_find_best_stream(is->p_format_context, AVMEDIA_TYPE_VIDEO, -1, -1, nullptr, 0);
-  is->audio_index = av_find_best_stream(is->p_format_context, AVMEDIA_TYPE_AUDIO, -1, is->video_index, nullptr, 0);
-  if (is->video_index < 0 && is->audio_index < 0) {
-    rv = -1;
-    goto cleanup;
-  }
-
-  is->p_window = SDL_CreateWindow(is->p_filename, SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED, 640, 480, 0);
-  if (!is->p_window) goto cleanup;
-
-  is->p_renderer = SDL_CreateRenderer(is->p_window, -1, 0);
-  if (!is->p_renderer) goto cleanup;
-
-  if (is->audio_index >= 0) {
-    rv = stream_component_open(is, is->audio_index);
-    if (rv < 0) goto cleanup;
-  }
-  if (is->video_index >= 0) {
-    AVCodecParameters *codec_par = is->p_format_context->streams[is->video_index]->codecpar;
-    SDL_SetWindowSize(is->p_window, codec_par->width, codec_par->height);
-    rv = stream_component_open(is, is->video_index);
-    if (rv < 0) goto cleanup;
-  }
-
-  is->p_parser_tid = SDL_CreateThread(parse_thread, "parse", is);
-  if (!is->p_parser_tid) goto cleanup;
-
-  for (;;) {
-    SDL_WaitEvent(&evt);
-    switch (evt.type)
-    {
-      case SDL_QUIT:
-        is->quit = 1;
-        SDL_Quit();
-        goto cleanup;
-      default:
-        break;
-    }
-  }
-
-  cleanup:
-  if (is->p_frame_RGB) av_frame_free(&is->p_frame_RGB);
-  if (is->p_frame_buffer) av_free(is->p_frame_buffer);
-  if (is->p_format_context) {
-    avformat_close_input(&is->p_format_context);
-    avformat_free_context(is->p_format_context);
-  }
-  if (is->p_filename) av_free(is->p_filename);
-  if (is) av_free(is);
-  return rv;
+  return 0;
 }
