@@ -9,12 +9,14 @@ extern "C" {
 #include <SDL.h>
 
 typedef struct VideoState {
+  SDL_Thread *read_tid;   // 204
 
+  char *filename;         // 291
 } VideoState;
 
 /* options specified by the user */
-static AVInputFormat *file_iformat;
-static const char *input_filename;
+static AVInputFormat *file_iformat;   // 310
+static const char *input_filename;    // 311
 
 static int decoder_decode_frame(Decoder *d, AVFrame *frame, AVSubtitle *sub)    // 585
 {
@@ -48,7 +50,7 @@ static int decoder_decode_frame(Decoder *d, AVFrame *frame, AVSubtitle *sub)    
   }
 }
 
-static void frame_queue_push(FrameQueue *f)   // 772
+static void frame_queue_push(FrameQueue *f)       // 772
 {
 
 }
@@ -58,7 +60,12 @@ static void video_image_display(VideoState *is)   // 957
 
 }
 
-static void video_audio_display(VideoState *is)    // 1043
+static void video_audio_display(VideoState *is)   // 1043
+{
+
+}
+
+static void stream_close(VideoState *is)          // 1242
 {
 
 }
@@ -194,8 +201,26 @@ static int read_thread(void *arg)     // 2725
 
 static VideoState *stream_open(const char *filename, AVInputFormat *iformat)  // 3047
 {
+  VideoState *is;
+
+  is = av_mallocz(sizeof(VideoState));
+  if (!is)
+    return NULL;
+  is->filename = av_strdup(filename);
+  if (!is->filename)
+    goto fail;
+
+  // TODO
+
   // 2. create a thread
   is->read_tid = SDL_CreateThread(read_thread, "read_thread", is);
+  if (!is->read_tid) {
+    av_log(NULL, AV_LOG_FATAL, "SDL_CreateThread(): %s\n", SDL_GetError());
+fail:
+    stream_close(is);
+    return NULL;
+  }
+  return is;
 }
 
 static void refresh_loop_wait_event(VideoState *is, SDL_Event *event)   // 3199
@@ -221,6 +246,8 @@ static void event_loop(VideoState *cur_stream)  // 3244
 int main(int argc, char *argv[])  // 3645
 {
   VideoState *is;
+
+  input_filename = "little.mkv";
 
   // 1. open stream
   is = stream_open(input_filename, file_iformat);
